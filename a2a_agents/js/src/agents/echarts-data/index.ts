@@ -1,4 +1,6 @@
+import "dotenv/config";
 import express from "express";
+import cors from "cors";
 import { v4 as uuidv4 } from 'uuid';
 
 import {
@@ -7,7 +9,8 @@ import {
     TaskState,
     TaskStatusUpdateEvent,
     TextPart,
-    Message
+    Message,
+    Part
 } from "@a2a-js/sdk";
 import {
     InMemoryTaskStore,
@@ -20,6 +23,7 @@ import {
 import { A2AExpressApp } from "@a2a-js/sdk/server/express";
 import { MessageData } from "genkit";
 import { ai } from "./genkit.js";
+import { extractSupportedCatalogs, createA2UIPart } from "../shared/a2ui.js";
 
 if (!process.env.GEMINI_API_KEY) {
     console.error("GEMINI_API_KEY environment variable is required")
@@ -59,20 +63,44 @@ class EchartsAgentExecutor implements AgentExecutor {
             `[EchartsAgentExecutor] Processing message ${userMessage.messageId} for task ${taskId} (context: ${contextId})`
         );
 
-        if (!existingTask) {
-            const initialTask: Task = {
-                kind: 'task',
-                id: taskId,
-                contextId: contextId,
-                status: {
-                    state: "submitted",
-                    timestamp: new Date().toISOString(),
+        const initialTask: Task = {
+            kind: 'task',
+            id: taskId,
+            contextId: contextId,
+            status: {
+                state: "submitted",
+                message: {
+                    kind: 'message',
+                    role: 'agent',
+                    messageId: uuidv4(),
+                    parts: [
+                        createA2UIPart({
+                            surfaceId: "@default",
+                            beginRendering: { root: "loading-placeholder" }
+                        }),
+                        createA2UIPart({
+                            surfaceId: "@default",
+                            surfaceUpdate: {
+                                components: [
+                                    {
+                                        id: "loading-placeholder",
+                                        component: {
+                                            Text: { text: "Generating your chart... please wait." }
+                                        }
+                                    }
+                                ]
+                            }
+                        })
+                    ],
+                    taskId: taskId,
+                    contextId: contextId,
                 },
-                history: [userMessage],
-                metadata: userMessage.metadata,
-            };
-            eventBus.publish(initialTask);
-        }
+                timestamp: new Date().toISOString(),
+            },
+            history: [userMessage],
+            metadata: userMessage.metadata,
+        };
+        eventBus.publish(initialTask);
 
         const workingStatusUpdate: TaskStatusUpdateEvent = {
             kind: 'status-update',
@@ -137,8 +165,14 @@ class EchartsAgentExecutor implements AgentExecutor {
         const goal = existingTask?.metadata?.goal as string | undefined || userMessage.metadata?.goal as string | undefined;
 
         try {
+            const supportedCatalogs = extractSupportedCatalogs(requestContext);
+
             const response = await echartsAgentPrompt(
-                { goal: goal, now: new Date().toISOString() },
+                {
+                    goal: goal,
+                    now: new Date().toISOString(),
+                    supported_catalogs: supportedCatalogs.length > 0 ? supportedCatalogs.join(', ') : undefined
+                },
                 {
                     messages,
                 }
@@ -169,11 +203,60 @@ class EchartsAgentExecutor implements AgentExecutor {
 
             let finalA2AState: TaskState = "completed";
 
+            let agentPart: Part | Part[];
+            try {
+                const parsed = JSON.parse(responseText);
+                // Ensure we have a beginRendering message if the LLM didn't provide one
+                const messages = [];
+                if (!responseText.includes("beginRendering")) {
+                    messages.push({
+                        surfaceId: "@default",
+                        beginRendering: { root: parsed.id || (parsed.surfaceUpdate?.components?.[0]?.id) || "chart-root" }
+                    });
+                }
+                messages.push(parsed);
+                agentPart = messages.map(m => createA2UIPart(m));
+                console.info("[EchartsAgentExecutor] Response is JSON, wrapping in A2UI parts.");
+            } catch (e) {
+                console.error("[EchartsAgentExecutor] Failed to parse JSON, using mock data fallback.", e);
+                // Return a mock Echarts message if parsing fails
+                const mockMessages = [
+                    {
+                        surfaceId: "@default",
+                        beginRendering: { root: "mock-chart" }
+                    },
+                    {
+                        surfaceId: "@default",
+                        surfaceUpdate: {
+                            components: [
+                                {
+                                    id: "mock-chart",
+                                    component: {
+                                        Echarts: {
+                                            options: {
+                                                title: { text: 'Mock Sales Data (Fallback)' },
+                                                xAxis: { data: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'] },
+                                                yAxis: {},
+                                                series: [{
+                                                    type: 'bar',
+                                                    data: [120, 200, 150, 80, 70]
+                                                }]
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ];
+                agentPart = mockMessages.map(m => createA2UIPart(m));
+            }
+
             const agentMessage: Message = {
                 kind: 'message',
                 role: 'agent',
                 messageId: uuidv4(),
-                parts: [{ kind: 'text', text: responseText }],
+                parts: Array.isArray(agentPart) ? agentPart : [agentPart],
                 taskId: taskId,
                 contextId: contextId,
             };
@@ -192,12 +275,47 @@ class EchartsAgentExecutor implements AgentExecutor {
                 final: true,
             };
             eventBus.publish(finalUpdate);
-
+            // Also log success
+            console.info(`[EchartsAgentExecutor] Published final update for task ${taskId}`);
         } catch (error: any) {
             console.error(
                 `[EchartsAgentExecutor] Error processing task ${taskId}:`,
                 error
             );
+
+            const errorA2UI = [
+                {
+                    surfaceId: "@default",
+                    beginRendering: { root: "error-card" }
+                },
+                {
+                    surfaceId: "@default",
+                    surfaceUpdate: {
+                        components: [
+                            {
+                                id: "error-card",
+                                component: {
+                                    Text: { text: `Agent error: ${error.message}. Returning mock data instead.` }
+                                }
+                            },
+                            {
+                                id: "mock-chart-error",
+                                component: {
+                                    Echarts: {
+                                        options: {
+                                            title: { text: 'Sales Data (Fallback Due to Error)' },
+                                            xAxis: { data: ['A', 'B', 'C', 'D'] },
+                                            yAxis: {},
+                                            series: [{ type: 'bar', data: [10, 20, 30, 40] }]
+                                        }
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            ];
+
             const errorUpdate: TaskStatusUpdateEvent = {
                 kind: 'status-update',
                 taskId: taskId,
@@ -208,7 +326,7 @@ class EchartsAgentExecutor implements AgentExecutor {
                         kind: 'message',
                         role: 'agent',
                         messageId: uuidv4(),
-                        parts: [{ kind: 'text', text: `Agent error: ${error.message}` }],
+                        parts: errorA2UI.map(m => createA2UIPart(m)),
                         taskId: taskId,
                         contextId: contextId,
                     },
@@ -268,7 +386,9 @@ async function main() {
     );
 
     const appBuilder = new A2AExpressApp(requestHandler);
-    const expressApp = appBuilder.setupRoutes(express());
+    const app = express();
+    app.use(cors());
+    const expressApp = appBuilder.setupRoutes(app);
 
     const PORT = process.env.PORT || 41243;
     expressApp.listen(PORT, () => {

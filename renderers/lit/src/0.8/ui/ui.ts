@@ -19,7 +19,7 @@ export type TagName = keyof A2UITagNameMap;
 // A type that describes a constructor function which returns an instance of T
 export type CustomElementConstructorOf<T extends HTMLElement> = {
   // The 'new' signature ensures it can be instantiated
-  new (): T;
+  new(): T;
 } & typeof HTMLElement;
 
 import { Audio } from "./audio.js";
@@ -29,6 +29,7 @@ import { Checkbox } from "./checkbox.js";
 import { Column } from "./column.js";
 import { DateTimeInput } from "./datetime-input.js";
 import { Divider } from "./divider.js";
+import { EChart } from "./echarts.js";
 import { Icon } from "./icon.js";
 import { Image } from "./image.js";
 import { List } from "./list.js";
@@ -45,8 +46,11 @@ import { Video } from "./video.js";
 
 export * as Context from "./context/theme.js";
 export * as Utils from "./utils/utils.js";
-export { ComponentRegistry, componentRegistry } from "./component-registry.js";
+import { ComponentRegistry, componentRegistry } from "./component-registry.js";
+export { ComponentRegistry, componentRegistry };
 export { registerCustomComponents } from "./custom-components/index.js";
+
+componentRegistry.register("Echarts", EChart, "a2ui-echart");
 
 export {
   Audio,
@@ -69,6 +73,7 @@ export {
   Text,
   TextField,
   Video,
+  EChart,
 };
 
 interface A2UITagNameMap {
@@ -92,11 +97,12 @@ interface A2UITagNameMap {
   "a2ui-text": Text;
   "a2ui-textfield": TextField;
   "a2ui-video": Video;
+  "a2ui-echart": EChart;
 }
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-  interface HTMLElementTagNameMap extends A2UITagNameMap {}
+  interface HTMLElementTagNameMap extends A2UITagNameMap { }
 }
 
 /**

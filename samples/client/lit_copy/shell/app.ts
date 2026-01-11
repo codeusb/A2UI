@@ -45,11 +45,13 @@ import "./ui/ui.js";
 import { AppConfig } from "./configs/types.js";
 import { config as restaurantConfig } from "./configs/restaurant.js";
 import { config as contactsConfig } from "./configs/contacts.js";
+import { config as echartsConfig } from "./configs/echarts.js";
 import { styleMap } from "lit/directives/style-map.js";
 
 const configs: Record<string, AppConfig> = {
   restaurant: restaurantConfig,
   contacts: contactsConfig,
+  echarts: echartsConfig,
 };
 
 @customElement("a2ui-shell")
@@ -58,19 +60,19 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
   accessor theme: v0_8.Types.Theme = uiTheme;
 
   @state()
-  accessor #requesting = false;
+  accessor requesting = false;
 
   @state()
-  accessor #error: string | null = null;
+  accessor error: string | null = null;
 
   @state()
-  accessor #lastMessages: v0_8.Types.ServerToClientMessage[] = [];
+  accessor lastMessages: v0_8.Types.ServerToClientMessage[] = [];
 
   @state()
-  accessor config: AppConfig = configs.restaurant;
+  accessor config: AppConfig = configs.echarts;
 
   @state()
-  accessor #loadingTextIndex = 0;
+  accessor loadingTextIndex = 0;
   #loadingInterval: number | undefined;
 
   static styles = [
@@ -82,11 +84,34 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
 
       :host {
         display: block;
-        max-width: 640px;
-        margin: 0 auto;
-        min-height: 100%;
+        width: 100vw;
+        height: 100vh;
         color: light-dark(var(--n-10), var(--n-90));
         font-family: var(--font-family);
+        overflow: hidden;
+      }
+
+      #main-container {
+        display: grid;
+        grid-template-columns: 400px 1fr;
+        height: 100%;
+        width: 100%;
+      }
+
+      #left-panel {
+        padding: var(--bb-grid-size-4);
+        border-right: 1px solid var(--n-90);
+        display: flex;
+        flex-direction: column;
+        background: light-dark(var(--n-100), var(--n-5));
+        overflow-y: auto;
+      }
+
+      #right-panel {
+        flex: 1;
+        overflow-y: auto;
+        padding: var(--bb-grid-size-4);
+        background: var(--background);
       }
 
       #hero-img {
@@ -266,8 +291,8 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
     `,
   ];
 
-  #processor = v0_8.Data.createSignalA2uiMessageProcessor();
-  #a2uiClient = new A2UIClient();
+  processor: v0_8.Types.MessageProcessor = v0_8.Data.createSignalA2uiMessageProcessor();
+  a2uiClient: A2UIClient = new A2UIClient();
   #snackbar: Snackbar | undefined = undefined;
   #pendingSnackbarMessages: Array<{
     message: SnackbarMessage;
@@ -275,9 +300,9 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
   }> = [];
 
   #maybeRenderError() {
-    if (!this.#error) return nothing;
+    if (!this.error) return nothing;
 
-    return html`<div class="error">${this.#error}</div>`;
+    return html`<div class="error">${this.error}</div>`;
   }
 
   connectedCallback() {
@@ -285,8 +310,8 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
 
     // Load config from URL
     const urlParams = new URLSearchParams(window.location.search);
-    const appKey = urlParams.get("app") || "restaurant";
-    this.config = configs[appKey] || configs.restaurant;
+    const appKey = urlParams.get("app") || "echarts";
+    this.config = configs[appKey] || configs.echarts;
 
     // Apply the theme directly, which will use the Lit context.
     if (this.config.theme) {
@@ -300,15 +325,21 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
     );
 
     // Initialize client with configured URL
-    this.#a2uiClient = new A2UIClient(this.config.serverUrl);
+    this.a2uiClient = new A2UIClient(this.config.serverUrl);
   }
 
   render() {
     return [
       this.#renderThemeToggle(),
-      this.#maybeRenderForm(),
-      this.#maybeRenderData(),
-      this.#maybeRenderError(),
+      html`<div id="main-container">
+        <div id="left-panel">
+          ${this.#maybeRenderForm()}
+          ${this.#maybeRenderError()}
+        </div>
+        <div id="right-panel">
+          ${this.#maybeRenderData()}
+        </div>
+      </div>`,
     ];
   }
 
@@ -334,8 +365,7 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
   }
 
   #maybeRenderForm() {
-    if (this.#requesting) return nothing;
-    if (this.#lastMessages.length > 0) return nothing;
+    if (this.requesting) return nothing;
 
     return html` <form
       @submit=${async (evt: Event) => {
@@ -371,9 +401,9 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
           id="body"
           name="body"
           type="text"
-          ?disabled=${this.#requesting}
+          ?disabled=${this.requesting}
         />
-        <button type="submit" ?disabled=${this.#requesting}>
+        <button type="submit" ?disabled=${this.requesting}>
           <span class="g-icon filled-heavy">send</span>
         </button>
       </div>
@@ -385,10 +415,10 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
       Array.isArray(this.config.loadingText) &&
       this.config.loadingText.length > 1
     ) {
-      this.#loadingTextIndex = 0;
+      this.loadingTextIndex = 0;
       this.#loadingInterval = window.setInterval(() => {
-        this.#loadingTextIndex =
-          (this.#loadingTextIndex + 1) %
+        this.loadingTextIndex =
+          (this.loadingTextIndex + 1) %
           (this.config.loadingText as string[]).length;
       }, 2000);
     }
@@ -405,18 +435,18 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
     message: v0_8.Types.A2UIClientEventMessage
   ): Promise<v0_8.Types.ServerToClientMessage[]> {
     try {
-      this.#requesting = true;
+      this.requesting = true;
       this.#startLoadingAnimation();
-      const response = this.#a2uiClient.send(message);
+      const response = this.a2uiClient.send(message);
       await response;
-      this.#requesting = false;
+      this.requesting = false;
       this.#stopLoadingAnimation();
 
       return response;
     } catch (err) {
       this.snackbar(err as string, SnackType.ERROR);
     } finally {
-      this.#requesting = false;
+      this.requesting = false;
       this.#stopLoadingAnimation();
     }
 
@@ -424,11 +454,11 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
   }
 
   #maybeRenderData() {
-    if (this.#requesting) {
+    if (this.requesting) {
       let text = "Awaiting an answer...";
       if (this.config.loadingText) {
         if (Array.isArray(this.config.loadingText)) {
-          text = this.config.loadingText[this.#loadingTextIndex];
+          text = this.config.loadingText[this.loadingTextIndex];
         } else {
           text = this.config.loadingText;
         }
@@ -440,14 +470,14 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
       </div>`;
     }
 
-    const surfaces = this.#processor.getSurfaces();
+    const surfaces = this.processor.getSurfaces();
     if (surfaces.size === 0) {
       return nothing;
     }
 
     return html`<section id="surfaces">
       ${repeat(
-      this.#processor.getSurfaces(),
+      this.processor.getSurfaces(),
       ([surfaceId]) => surfaceId,
       ([surfaceId, surface]) => {
         return html`<a2ui-surface
@@ -471,11 +501,11 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
                 } else if (item.value.literalString) {
                   context[item.key] = item.value.literalString;
                 } else if (item.value.path) {
-                  const path = this.#processor.resolvePath(
+                  const path = this.processor.resolvePath(
                     item.value.path,
                     evt.detail.dataContextPath
                   );
-                  const value = this.#processor.getData(
+                  const value = this.processor.getData(
                     evt.detail.sourceComponent,
                     path,
                     surfaceId
@@ -499,8 +529,9 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
           }}
               .surfaceId=${surfaceId}
               .surface=${surface}
-              .processor=${this.#processor}
-            ></a2-uisurface>`;
+              .processor=${this.processor}
+              .enableCustomElements=${true}
+            ></a2ui-surface>`;
       }
     )}
     </section>`;
@@ -511,9 +542,9 @@ export class A2UILayoutEditor extends SignalWatcher(LitElement) {
 
     console.log(messages);
 
-    this.#lastMessages = messages;
-    this.#processor.clearSurfaces();
-    this.#processor.processMessages(messages);
+    this.lastMessages = messages;
+    this.processor.clearSurfaces();
+    this.processor.processMessages(messages);
   }
 
   snackbar(
